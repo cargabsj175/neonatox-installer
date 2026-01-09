@@ -1,0 +1,157 @@
+#!/bin/sh
+# usersctl - gestión de usuarios (estado + apply)
+# Neonatox / LFS / Alpine / Arch / Debian compatible
+
+BASE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+. "$BASE_DIR/lib/compat.sh"
+. "$BASE_DIR/lib/state.sh"
+
+usage() {
+    echo "Uso:"
+    echo "  usersctl create USER PASS        # define usuario (estado)"
+    echo "  usersctl rootpass PASS           # define password de root (estado)"
+    echo "  usersctl apply MOUNT_ROOT        # aplica en sistema instalado"
+    exit 1
+}
+
+# --------------------------------------------------
+# CREATE USER (estado)
+# --------------------------------------------------
+create_user() {
+    USER_NAME="$1"
+    USER_PASS="$2"
+
+    [ -n "$USER_NAME" ] && [ -n "$USER_PASS" ] || usage
+
+    state_set user USER_NAME "$USER_NAME"
+    state_set user USER_UID "1000"
+    state_set user USER_HOME "/home/$USER_NAME"
+    state_set user USER_SHELL "/bin/sh"
+    state_set user USER_GROUPS "audio,video,netdev,adm,wheel,greetd"
+    state_set user USER_PASS_PLAIN "$USER_PASS"
+
+    state_ok user
+    log "Usuario '$USER_NAME' definido (contraseña almacenada temporalmente)"
+}
+
+# --------------------------------------------------
+# ROOT PASSWORD (estado)
+# --------------------------------------------------
+set_root_pass() {
+    ROOT_PASS="$1"
+    [ -n "$ROOT_PASS" ] || usage
+
+    state_set user ROOT_PASS_PLAIN "$ROOT_PASS"
+    state_ok user
+
+    log "Password de root definido (estado)"
+}
+
+# --------------------------------------------------
+# FALLBACK manual (sin useradd/adduser)
+# --------------------------------------------------
+create_user_fallback() {
+    tgt="$1"
+
+    log "Creación manual de usuario (fallback SIN contraseña)"
+
+    uid="${USER_UID:-1000}"
+    gid="$uid"
+
+    mkdir -p "$tgt/etc" "$tgt/$USER_HOME"
+
+    touch "$tgt/etc/passwd" "$tgt/etc/group" "$tgt/etc/shadow"
+    chmod 644 "$tgt/etc/passwd" "$tgt/etc/group"
+    chmod 600 "$tgt/etc/shadow"
+
+    grep -q "^$USER_NAME:" "$tgt/etc/group" || \
+        echo "$USER_NAME:x:$gid:" >> "$tgt/etc/group"
+
+    grep -q "^$USER_NAME:" "$tgt/etc/passwd" || \
+        echo "$USER_NAME:x:$uid:$gid::$USER_HOME:$USER_SHELL" >> "$tgt/etc/passwd"
+
+    chown -R "$uid:$gid" "$tgt/$USER_HOME" 2>/dev/null || true
+
+    log "Usuario creado sin contraseña (fallback)"
+}
+
+# --------------------------------------------------
+# APPLY (sistema instalado)
+# --------------------------------------------------
+apply_user() {
+    TARGET="$1"
+
+    #  PROTECCIONES
+    [ -n "$TARGET" ] || usage
+    [ "$TARGET" != "/" ] || die "Nunca aplicar usuarios sobre / (live)"
+    [ -d "$TARGET/etc" ] || die "Destino inválido: $TARGET"
+
+    state_require user
+    state_load user
+
+    log "Aplicando usuarios en $TARGET"
+
+    # --------------------------------------------------
+    # ROOT password
+    # --------------------------------------------------
+    if [ -n "$ROOT_PASS_PLAIN" ]; then
+        log "Configurando password de root"
+
+        echo "root:$ROOT_PASS_PLAIN" | chroot "$TARGET" chpasswd \
+            || die "Falló chpasswd para root"
+    fi
+
+    # --------------------------------------------------
+    # USUARIO NORMAL
+    # --------------------------------------------------
+    if [ -n "$USER_NAME" ]; then
+        log "Creando usuario '$USER_NAME'"
+
+        if chroot "$TARGET" sh -c "command -v useradd" >/dev/null 2>&1; then
+            chroot "$TARGET" useradd -m \
+                -d "$USER_HOME" \
+                -s "$USER_SHELL" \
+                -G "$USER_GROUPS" \
+                "$USER_NAME" 2>/dev/null || true
+
+        elif chroot "$TARGET" sh -c "command -v useradd" >/dev/null 2>&1; then
+            chroot "$TARGET" adduser -D \
+                -h "$USER_HOME" \
+                -s "$USER_SHELL" \
+                "$USER_NAME" 2>/dev/null || true
+        else
+            create_user_fallback "$TARGET"
+        fi
+
+        log "Estableciendo contraseña de '$USER_NAME'"
+
+        echo "$USER_NAME:$USER_PASS_PLAIN" | chroot "$TARGET" chpasswd \
+            || die "Falló chpasswd para $USER_NAME"
+    fi
+
+    log "Usuarios aplicados correctamente"
+}
+
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
+cmd="$1"
+shift || true
+
+state_init
+
+case "$cmd" in
+    create)
+        create_user "$@"
+        ;;
+    rootpass)
+        set_root_pass "$@"
+        ;;
+    apply)
+        apply_user "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac

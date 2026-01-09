@@ -1,0 +1,81 @@
+#!/bin/sh
+# fstabctl - genera /etc/fstab portable
+
+BASE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+. "$BASE_DIR/lib/compat.sh"
+. "$BASE_DIR/lib/state.sh"
+
+usage() {
+    echo "Uso: fstabctl generate TARGET_ROOT"
+    exit 1
+}
+
+get_uuid() {
+    dev="$1"
+
+    if have blkid; then
+        blkid -s UUID -o value "$dev" 2>/dev/null
+    fi
+}
+
+cmd="$1"
+TARGET_ROOT="$2"
+
+state_init
+
+case "$cmd" in
+generate)
+    [ -n "$TARGET_ROOT" ] || usage
+
+    state_require fstab
+    state_load fstab
+
+    mkdir -p "$TARGET_ROOT/etc"
+
+    FSTAB="$TARGET_ROOT/etc/fstab"
+
+    log "Generando fstab en $FSTAB"
+
+    {
+        echo "# /etc/fstab"
+        echo "# Generado por neonatox-installer"
+        echo
+
+        # ROOT
+        ROOT_ID="$(get_uuid "$ROOT_DEV")"
+        if [ -n "$ROOT_ID" ]; then
+            echo "UUID=$ROOT_ID  $ROOT_MNT  $ROOT_FS  defaults  0 1"
+        else
+            echo "$ROOT_DEV  $ROOT_MNT  $ROOT_FS  defaults  0 1"
+        fi
+
+        # BOOT
+        if [ -n "$BOOT_DEV" ]; then
+            BOOT_ID="$(get_uuid "$BOOT_DEV")"
+            BOOT_MNT="${BOOT_MNT:-/boot}"
+            if [ -n "$BOOT_ID" ]; then
+                echo "UUID=$BOOT_ID  $BOOT_MNT  $BOOT_FS  defaults  0 2"
+            else
+                echo "$BOOT_DEV  $BOOT_MNT  $BOOT_FS  defaults  0 2"
+            fi
+        fi
+
+        # SWAP
+        if [ -n "$SWAP_DEV" ]; then
+            SWAP_ID="$(get_uuid "$SWAP_DEV")"
+            if [ -n "$SWAP_ID" ]; then
+                echo "UUID=$SWAP_ID  none  swap  sw  0 0"
+            else
+                echo "$SWAP_DEV  none  swap  sw  0 0"
+            fi
+        fi
+    } > "$FSTAB"
+
+    state_ok fstab
+    log "fstab generado correctamente"
+    ;;
+*)
+    usage
+    ;;
+esac

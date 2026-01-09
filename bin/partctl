@@ -1,0 +1,77 @@
+#!/bin/sh
+# partctl - gestión de particiones (estado)
+
+BASE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+. "$BASE_DIR/lib/compat.sh"
+. "$BASE_DIR/lib/state.sh"
+
+usage() {
+    echo "Uso:"
+    echo "  partctl set-root DEV FS        # definir partición root"
+    echo "  partctl set-boot DEV FS        # definir partición boot"
+    echo "  partctl set-swap DEV           # definir swap"
+    echo "  partctl set-mount DIR          # definir punto de montaje destino"
+    echo "  partctl finalize               # marcar estado como listo"
+    exit 1
+}
+
+state_init
+
+cmd="$1"
+shift || true
+
+case "$cmd" in
+set-root)
+    dev="$1"
+    fs="$2"
+    [ -n "$dev" ] && [ -n "$fs" ] || usage
+
+    state_set disk PART_ROOT "$dev"
+    state_set disk FS_ROOT "$fs"
+
+    state_set fstab ROOT_DEV "$dev"
+    state_set fstab ROOT_FS "$fs"
+    state_set fstab ROOT_MNT "/"
+
+    log "Root definido: $dev ($fs)"
+    ;;
+set-boot)
+    dev="$1"
+    fs="$2"
+    [ -n "$dev" ] && [ -n "$fs" ] || usage
+
+    state_set disk PART_BOOT "$dev"
+    state_set disk FS_BOOT "$fs"
+
+    state_set fstab BOOT_DEV "$dev"
+    state_set fstab BOOT_FS "$fs"
+    state_set fstab BOOT_MNT "/boot"
+
+    log "Boot definido: $dev ($fs)"
+    ;;
+set-swap)
+    dev="$1"
+    [ -n "$dev" ] || usage
+
+    state_set disk PART_SWAP "$dev"
+    state_set fstab SWAP_DEV "$dev"
+
+    log "Swap definido: $dev"
+    ;;
+set-mount)
+    mnt="$1"
+    [ -n "$mnt" ] || usage
+
+    state_set disk MOUNT_ROOT "$mnt"
+    log "Punto de montaje definido: $mnt"
+    ;;
+finalize)
+    state_ok disk
+    state_ok fstab
+    log "Estado de particiones finalizado"
+    ;;
+*)
+    usage
+    ;;
+esac

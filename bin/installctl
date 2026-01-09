@@ -1,0 +1,212 @@
+#!/bin/sh
+# installctl - Instalación base universal desde live
+
+BASE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+. "$BASE_DIR/lib/compat.sh"
+. "$BASE_DIR/lib/state.sh"
+. "$BASE_DIR/lib/layout_lfs.sh"
+
+usage() {
+    echo "Uso: installctl install"
+    exit 1
+}
+
+detect_profile() {
+    if [ -f "$MOUNT_ROOT/etc/os-release" ]; then
+        # shellcheck disable=SC1090
+        . "$MOUNT_ROOT/etc/os-release"
+        case "$ID" in
+            alpine)  echo alpine ;;
+            arch)    echo arch ;;
+            debian|ubuntu) echo debian ;;
+            fedora|rhel|centos) echo redhat ;;
+            *) echo lfs ;;
+        esac
+    else
+        echo lfs
+    fi
+}
+
+# --------------------------------------------------
+# Detección del layout del rootfs origen
+# --------------------------------------------------
+detect_rootfs_layout() {
+    if [ -d "$ROOTFS_SOURCE/bin" ] || [ -d "$ROOTFS_SOURCE/lib" ] || [ -d "$ROOTFS_SOURCE/sbin" ]; then
+        echo legacy
+    else
+        echo usrmerge
+    fi
+}
+
+# --------------------------------------------------
+# Preparación del layout destino
+# --------------------------------------------------
+prepare_target_layout() {
+    layout="$1"
+    target="$2"
+
+    case "$layout" in
+        usrmerge)
+            log "Preparando layout destino: /usr-merge"
+            layout_lfs "$target"
+            ;;
+        legacy)
+            log "Preparando layout destino: legacy (sin /usr-merge)"
+            mkdir -p "$target"
+            ;;
+        *)
+            die "Layout desconocido: $layout"
+            ;;
+    esac
+}
+
+# --------------------------------------------------
+# Auto-detección rootfs Neonatox Live Boot
+# --------------------------------------------------
+detect_and_mount_rootfs() {
+    # Si ROOTFS_SOURCE ya está definido, no hacer nada
+    [ -n "$ROOTFS_SOURCE" ] && return 0
+
+    # Ruta estándar Neonatox Live Boot
+    if [ -f /mnt/iso/rootfs.squashfs ]; then
+        log "Detectado rootfs.squashfs en /mnt/iso"
+
+        mkdir -p /run/rootfs
+
+        if ! mountpoint -q /run/rootfs 2>/dev/null; then
+            mount -t squashfs -o ro /mnt/iso/rootfs.squashfs /run/rootfs \
+                || die "No se pudo montar rootfs.squashfs"
+        fi
+
+        ROOTFS_SOURCE=/run/rootfs
+        export ROOTFS_SOURCE
+        log "rootfs montado en /run/rootfs"
+        return 0
+    fi
+
+    return 1
+}
+
+cmd="$1"
+state_init
+
+case "$cmd" in
+install)
+    # --------------------------------------------------
+    # Estados mínimos requeridos
+    # --------------------------------------------------
+    state_require disk
+    state_require install
+
+    state_load disk
+    state_load install
+
+    : "${PART_ROOT:?PART_ROOT no definido}"
+    : "${MOUNT_ROOT:?MOUNT_ROOT no definido}"
+
+    if [ -z "$ROOTFS_SOURCE" ]; then
+        detect_and_mount_rootfs || die "ROOTFS_SOURCE no definido y no se pudo detectar rootfs live"
+    fi
+
+    # --------------------------------------------------
+    # Montaje de la partición root
+    # --------------------------------------------------
+    if [ "$PART_ROOT" != "none" ]; then
+        log "Montando partición root"
+        mount_if_needed "$PART_ROOT" "$MOUNT_ROOT" "$FS_ROOT"
+    else
+        log "Modo test: sin montaje de partición"
+        mkdir -p "$MOUNT_ROOT"
+    fi
+
+    # --------------------------------------------------
+    # Layout según el rootfs origen
+    # --------------------------------------------------
+    ROOTFS_LAYOUT="$(detect_rootfs_layout)"
+    log "Layout del rootfs detectado: $ROOTFS_LAYOUT"
+
+    prepare_target_layout "$ROOTFS_LAYOUT" "$MOUNT_ROOT"
+
+    # --------------------------------------------------
+    # Copia del sistema
+    # --------------------------------------------------
+    log "Copiando rootfs live"
+    copy_tree "$ROOTFS_SOURCE" "$MOUNT_ROOT"
+    
+    # --------------------------------------------------
+    # Aplicar localización (si existe estado)
+    # --------------------------------------------------
+    if [ -f "$STATE_DIR/locale.ok" ]; then
+        localectl apply "$MOUNT_ROOT"
+    fi
+    
+    # --------------------------------------------------
+    # Aplicar zona horaria (si existe estado)
+    # --------------------------------------------------
+    if [ -f "$STATE_DIR/time.ok" ]; then
+        timectl apply "$MOUNT_ROOT"
+    fi
+
+    # --------------------------------------------------
+    # Pseudo-filesystems
+    # --------------------------------------------------
+    if [ "$PART_ROOT" != "none" ]; then
+        log "Preparando pseudo-filesystems"
+        for d in dev proc sys run; do
+            mkdir -p "$MOUNT_ROOT/$d"
+            mount --bind "/$d" "$MOUNT_ROOT/$d"
+        done
+    else
+        log "Modo test: no se montan pseudo-filesystems"
+    fi
+
+    # --------------------------------------------------
+    # Perfil de distro
+    # --------------------------------------------------
+    profile="$(detect_profile)"
+    log "Perfil de distro detectado: $profile"
+
+    if [ -f "$BASE_DIR/lib/profiles/$profile.sh" ]; then
+        # shellcheck disable=SC1090
+        . "$BASE_DIR/lib/profiles/$profile.sh"
+        if type "profile_${profile}_postinstall" >/dev/null 2>&1; then
+            log "Ejecutando ajustes de perfil ($profile)"
+            profile_${profile}_postinstall "$MOUNT_ROOT"
+        fi
+    fi
+
+    # --------------------------------------------------
+    # USERS (opcional)
+    # --------------------------------------------------
+    if [ -f "$STATE_DIR/user.ok" ] && [ -x "$BASE_DIR/bin/usersctl" ]; then
+        log "Aplicando usuarios"
+        "$BASE_DIR/bin/usersctl" apply "$MOUNT_ROOT"
+    else
+        log "Usuarios no configurados, se omite"
+    fi
+
+    # --------------------------------------------------
+    # fstab (opcional)
+    # --------------------------------------------------
+    if [ -f "$STATE_DIR/fstab.ok" ] && [ -x "$BASE_DIR/bin/fstabctl" ]; then
+        log "Generando fstab"
+        "$BASE_DIR/bin/fstabctl" generate "$MOUNT_ROOT"
+    else
+        log "fstab no configurado, se omite"
+    fi
+
+    # --------------------------------------------------
+    # bootloader (opcional)
+    # --------------------------------------------------
+    if [ -x "$BASE_DIR/bin/bootctl" ]; then
+        "$BASE_DIR/bin/bootctl" install "$MOUNT_ROOT"
+    fi
+
+    state_ok install
+    log "Instalación base completada"
+    ;;
+*)
+    usage
+    ;;
+esac

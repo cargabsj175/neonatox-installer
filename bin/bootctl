@@ -1,0 +1,172 @@
+#!/bin/sh
+# bootctl - instalación de bootloader (Neonatox, perfil lfs)
+
+BASE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+. "$BASE_DIR/lib/compat.sh"
+. "$BASE_DIR/lib/state.sh"
+
+usage() {
+    echo "Uso:"
+    echo "  bootctl install MOUNT_ROOT"
+    exit 1
+}
+
+# --------------------------------------------------
+# Util: obtener disco base desde partición
+# --------------------------------------------------
+get_disk_from_partition() {
+    dev="$1"
+    case "$dev" in
+        /dev/nvme*p*)
+            echo "${dev%p*}"
+            ;;
+        *)
+            echo "${dev%[0-9]*}"
+            ;;
+    esac
+}
+
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
+cmd="$1"
+TARGET="$2"
+
+state_init
+
+[ "$cmd" = "install" ] || usage
+[ -n "$TARGET" ] || usage
+
+# --------------------------------------------------
+# Protecciones básicas
+# --------------------------------------------------
+if [ "$TARGET" = "/" ]; then
+    die "Destino inválido: /"
+fi
+
+if [ ! -d "$TARGET/etc" ] || [ ! -d "$TARGET/usr" ]; then
+    die "El destino no parece un sistema instalado válido"
+fi
+
+state_require disk
+state_load disk
+
+: "${PART_ROOT:?PART_ROOT no definido}"
+
+DISK_DEV="$(get_disk_from_partition "$PART_ROOT")"
+[ -b "$DISK_DEV" ] || die "Disco inválido: $DISK_DEV"
+
+log "Instalando bootloader Neonatox"
+log "Root:  $PART_ROOT"
+log "Disco: $DISK_DEV"
+log "Destino: $TARGET"
+
+# --------------------------------------------------
+# 1️ Generar initrd usando /boot del destino
+# --------------------------------------------------
+log "Generando initrd Neonatox (mkinitramfs en live)"
+
+mkdir -p "$TARGET/boot"
+
+mount --bind "$TARGET/boot" /boot \
+    || die "No se pudo bind-mount de /boot"
+
+trap 'umount /boot 2>/dev/null' EXIT
+
+[ -x /sbin/mkinitramfs ] || die "/sbin/mkinitramfs no existe en el live"
+
+/sbin/mkinitramfs || die "mkinitramfs falló"
+
+# IMPORTANTE: desmontar /boot ANTES de copiar vmlinuz
+umount /boot
+trap - EXIT
+
+log "Initrd generado correctamente en $TARGET/boot"
+
+# --------------------------------------------------
+# 2️ Detectar initrd generado
+# --------------------------------------------------
+INITRD_PATH="$(ls "$TARGET"/boot/initrd-* "$TARGET"/boot/initramfs-* 2>/dev/null | head -n1)"
+[ -n "$INITRD_PATH" ] || die "No se encontró initrd generado"
+
+INITRD_NAME="$(basename "$INITRD_PATH")"
+INITRD_SUFFIX="${INITRD_NAME#initrd-}"
+
+log "Initrd detectado: $INITRD_NAME"
+
+# --------------------------------------------------
+# 3️ Copiar vmlinuz DESDE EL LIVE REAL
+# --------------------------------------------------
+LIVE_KERNEL="/boot/vmlinuz"
+[ -f "$LIVE_KERNEL" ] || die "No se encontró /boot/vmlinuz en el live"
+
+cp -a "$LIVE_KERNEL" "$TARGET/boot/vmlinuz" \
+    || die "No se pudo copiar vmlinuz"
+
+KERNEL_NAME="vmlinuz"
+
+# --------------------------------------------------
+# 4 Verificar uname y renombrar kernel (opcional)
+# --------------------------------------------------
+KVER="$(uname -r)"
+KARCH="$(uname -m)"
+
+RENAME_OK=1
+
+case "$INITRD_SUFFIX" in
+    *"$KVER"*) ;;
+    *) RENAME_OK=0 ;;
+esac
+
+case "$INITRD_SUFFIX" in
+    *"$KARCH"*) ;;
+    *) RENAME_OK=0 ;;
+esac
+
+KERNEL_NAME="vmlinuz"
+
+if [ "$RENAME_OK" -eq 1 ]; then
+    NEW_KERNEL_NAME="vmlinuz-$INITRD_SUFFIX"
+    log "Renombrando kernel a $NEW_KERNEL_NAME"
+
+    if [ -f "$TARGET/boot/vmlinuz" ]; then
+        mv "$TARGET/boot/vmlinuz" "$TARGET/boot/$NEW_KERNEL_NAME" \
+            || die "No se pudo renombrar el kernel"
+        KERNEL_NAME="$NEW_KERNEL_NAME"
+    else
+        log "Aviso: $TARGET/boot/vmlinuz no existe, se omite rename"
+    fi
+else
+    log "Aviso: uname no coincide con initrd, se mantiene vmlinuz"
+fi
+
+# --------------------------------------------------
+# 5 Instalar GRUB (BIOS) en el disco
+# --------------------------------------------------
+log "Instalando GRUB (BIOS) en $DISK_DEV"
+
+grub-install \
+    --target=i386-pc \
+    --boot-directory="$TARGET/boot" \
+    "$DISK_DEV" \
+    || die "Fallo al instalar GRUB"
+
+# --------------------------------------------------
+# 6 Generar grub.cfg mínimo
+# --------------------------------------------------
+log "Generando grub.cfg"
+
+mkdir -p "$TARGET/boot/grub"
+
+cat > "$TARGET/boot/grub/grub.cfg" <<EOF
+set timeout=5
+set default=0
+
+menuentry "Neonatox Linux" {
+    linux /boot/$KERNEL_NAME quiet root=$PART_ROOT rw
+    initrd /boot/$INITRD_NAME
+}
+EOF
+
+log "Bootloader Neonatox instalado correctamente"

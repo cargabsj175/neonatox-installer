@@ -1,0 +1,63 @@
+#!/bin/sh
+# localectl - configuración portable de idioma y teclado
+
+BASE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+. "$BASE_DIR/lib/compat.sh"
+. "$BASE_DIR/lib/state.sh"
+
+usage() {
+    echo "Uso:"
+    echo "  localectl set-lang LANG"
+    echo "  localectl set-keymap KEYMAP"
+    echo "  localectl apply MOUNT_ROOT"
+    exit 1
+}
+
+state_init
+cmd="$1"
+shift || true
+
+case "$cmd" in
+set-lang)
+    LANG_VAL="$1"
+    [ -n "$LANG_VAL" ] || usage
+
+    state_set locale LANG "$LANG_VAL"
+    state_ok locale
+    log "Idioma definido: $LANG_VAL"
+    ;;
+set-keymap)
+    KEYMAP_VAL="$1"
+    [ -n "$KEYMAP_VAL" ] || usage
+
+    state_set locale KEYMAP "$KEYMAP_VAL"
+    state_ok locale
+    log "Teclado definido: $KEYMAP_VAL"
+    ;;
+apply)
+    TARGET="$1"
+    [ -n "$TARGET" ] || usage
+    [ "$TARGET" != "/" ] || die "Destino inválido: /"
+
+    state_require locale
+    state_load locale
+
+    log "Aplicando configuración regional en $TARGET"
+
+    mkdir -p "$TARGET/etc"
+
+    if [ -n "$LANG" ]; then
+        echo "LANG=$LANG" > "$TARGET/etc/locale.conf"
+        log "LANG aplicado"
+    fi
+
+    if [ -n "$KEYMAP" ]; then
+        echo "KEYMAP=$KEYMAP" > "$TARGET/etc/vconsole.conf"
+        log "KEYMAP aplicado"
+    fi
+    ;;
+*)
+    usage
+    ;;
+esac

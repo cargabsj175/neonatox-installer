@@ -1,0 +1,49 @@
+#!/bin/sh
+# timectl - configuración portable de zona horaria
+
+BASE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+. "$BASE_DIR/lib/compat.sh"
+. "$BASE_DIR/lib/state.sh"
+
+usage() {
+    echo "Uso:"
+    echo "  timectl set-timezone ZONE"
+    echo "  timectl apply MOUNT_ROOT"
+    exit 1
+}
+
+state_init
+cmd="$1"
+shift || true
+
+case "$cmd" in
+set-timezone)
+    ZONE="$1"
+    [ -n "$ZONE" ] || usage
+
+    state_set time TIMEZONE "$ZONE"
+    state_ok time
+    log "Zona horaria definida: $ZONE"
+    ;;
+apply)
+    TARGET="$1"
+    [ -n "$TARGET" ] || usage
+    [ "$TARGET" != "/" ] || die "Destino inválido: /"
+
+    state_require time
+    state_load time
+
+    ZONEINFO="/usr/share/zoneinfo/$TIMEZONE"
+    [ -f "$ZONEINFO" ] || die "Zona horaria inválida: $TIMEZONE"
+
+    log "Aplicando zona horaria en $TARGET"
+
+    mkdir -p "$TARGET/etc"
+    ln -sf "$ZONEINFO" "$TARGET/etc/localtime"
+    echo "$TIMEZONE" > "$TARGET/etc/timezone"
+    ;;
+*)
+    usage
+    ;;
+esac
