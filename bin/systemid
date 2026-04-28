@@ -1,0 +1,140 @@
+#!/bin/sh
+# systemid - identidad del sistema (hostname, hosts, machine-id)
+
+BASE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+. "$BASE_DIR/lib/compat.sh"
+. "$BASE_DIR/lib/state.sh"
+
+usage() {
+    echo "Uso:"
+    echo "  systemid set-hostname NAME     # definir hostname"
+    echo "  systemid set-auto              # auto-generar desde DMI"
+    echo "  systemid apply MOUNT_ROOT      # aplicar identidad"
+    exit 1
+}
+
+# --------------------------------------------------
+# Generar hostname automático desde DMI
+# --------------------------------------------------
+generate_hostname() {
+    vendor=""
+    model=""
+    
+    if [ -f /sys/devices/virtual/dmi/id/board_vendor ]; then
+        vendor=$(cat /sys/devices/virtual/dmi/id/board_vendor 2>/dev/null \
+            | tr '[:upper:]' '[:lower:]' \
+            | tr -c 'a-z0-9' '-' \
+            | sed 's/^-\+//;s/-\+$//' \
+            | cut -c1-6)
+    fi
+    
+    if [ -f /sys/devices/virtual/dmi/id/board_name ]; then
+        model=$(cat /sys/devices/virtual/dmi/id/board_name 2>/dev/null \
+            | tr '[:upper:]' '[:lower:]' \
+            | tr -c 'a-z0-9' '-' \
+            | sed 's/^-\+//;s/-\+$//' \
+            | cut -c1-6)
+    fi
+    
+    randomnum=$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' | head -c 4)
+    [ -z "$randomnum" ] && randomnum="0000"
+    
+    if [ -n "$vendor" ] && [ -n "$model" ]; then
+        echo "${vendor}-${model}-${randomnum}"
+    else
+        echo "neonatox-${randomnum}"
+    fi
+}
+
+# --------------------------------------------------
+# SET HOSTNAME (estado)
+# --------------------------------------------------
+set_hostname() {
+    hostname="$1"
+    [ -n "$hostname" ] || usage
+    
+    state_set systemid HOSTNAME "$hostname"
+    state_ok systemid
+    log "Hostname definido: $hostname"
+}
+
+set_auto_hostname() {
+    hostname=$(generate_hostname)
+    state_set systemid HOSTNAME "$hostname"
+    state_set systemid HOSTNAME_AUTO "1"
+    state_ok systemid
+    log "Hostname auto-generado: $hostname"
+}
+
+# --------------------------------------------------
+# APPLY identidad
+# --------------------------------------------------
+apply_identity() {
+    TARGET="$1"
+    [ -n "$TARGET" ] || usage
+    [ "$TARGET" != "/" ] || die "Nunca aplicar identidad sobre / (live)"
+    
+    state_require systemid
+    state_load systemid
+    
+    log "Aplicando identidad del sistema en $TARGET"
+    
+    mkdir -p "$TARGET/etc"
+    
+    # --------------------------------------------------
+    # /etc/hostname
+    # --------------------------------------------------
+    if [ -n "$HOSTNAME" ]; then
+        echo "$HOSTNAME" > "$TARGET/etc/hostname"
+        log "Hostname aplicado"
+    fi
+    
+    # --------------------------------------------------
+    # /etc/hosts
+    # --------------------------------------------------
+    hn="${HOSTNAME:-localhost}"
+    cat > "$TARGET/etc/hosts" << EOF
+127.0.0.1  localhost $hn
+::1        localhost $hn
+
+EOF
+    log "hosts aplicado"
+    
+    # --------------------------------------------------
+    # /etc/machine-id
+    # --------------------------------------------------
+    if [ ! -f "$TARGET/etc/machine-id" ]; then
+        if command -v openssl >/dev/null 2>&1; then
+            openssl rand -hex 16 > "$TARGET/etc/machine-id"
+        elif [ -f /proc/sys/kernel/random/boot_id ]; then
+            cat /proc/sys/kernel/random/boot_id | tr -d '-' > "$TARGET/etc/machine-id"
+        else
+            printf '%032x\n' "$(date +%s)" > "$TARGET/etc/machine-id"
+        fi
+        log "machine-id generado"
+    fi
+}
+
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
+cmd="$1"
+shift || true
+
+state_init
+
+case "$cmd" in
+    set-hostname)
+        set_hostname "$@"
+        ;;
+    set-auto)
+        set_auto_hostname
+        ;;
+    apply)
+        apply_identity "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac

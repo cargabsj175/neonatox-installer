@@ -65,4 +65,7 @@ layout_lfs() {
     # Permisos especiales
     install -dv -m 0750 "$LFS/root"
     install -dv -m 1777 "$LFS/tmp" "$LFS/var/tmp"
+    
+    # Package management metadata (nhopkg)
+    mkdir -p "$LFS/var/nhopkg"/{cache,files,logs,packages,repo}
 }

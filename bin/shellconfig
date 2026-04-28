@@ -1,0 +1,236 @@
+#!/bin/sh
+# shellconfig - configuración de shells (bashrc, profile, profile.d, skel)
+
+BASE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+. "$BASE_DIR/lib/compat.sh"
+
+usage() {
+    echo "Uso:"
+    echo "  shellconfig apply MOUNT_ROOT       # aplicar configuración de shells"
+    exit 1
+}
+
+# --------------------------------------------------
+# APPLY configuración de shells
+# --------------------------------------------------
+apply_shell_config() {
+    TARGET="$1"
+    [ -n "$TARGET" ] || usage
+    [ "$TARGET" != "/" ] || die "Nunca aplicar sobre / (live)"
+    
+    log "Aplicando configuración de shells en $TARGET"
+    
+    # --------------------------------------------------
+    # /etc/bashrc
+    # --------------------------------------------------
+    if [ ! -f "$TARGET/etc/bashrc" ]; then
+        cat > "$TARGET/etc/bashrc" << 'EOF'
+# Begin /etc/bashrc
+# System wide aliases and functions.
+
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+
+NORMAL="\[\e[0m\]"
+RED="\[\e[1;31m\]"
+GREEN="\[\e[1;32m\]"
+if [[ $EUID == 0 ]] ; then
+  PS1="$RED\u [ $NORMAL\w$RED ]# $NORMAL"
+else
+  PS1="$GREEN\u [ $NORMAL\w$GREEN ]\$ $NORMAL"
+fi
+unset RED GREEN NORMAL
+# End /etc/bashrc
+EOF
+        log "bashrc creado"
+    fi
+    
+    # --------------------------------------------------
+    # /etc/profile
+    # --------------------------------------------------
+    if [ ! -f "$TARGET/etc/profile" ]; then
+        cat > "$TARGET/etc/profile" << 'EOF'
+# Begin /etc/profile
+# System wide environment variables and startup programs.
+
+pathremove () {
+        local IFS=':'
+        local NEWPATH
+        local DIR
+        local PATHVARIABLE=${2:-PATH}
+        for DIR in ${!PATHVARIABLE} ; do
+                if [ "$DIR" != "$1" ] ; then
+                  NEWPATH=${NEWPATH:+$NEWPATH:}$DIR
+                fi
+        done
+        export $PATHVARIABLE="$NEWPATH"
+}
+
+pathprepend () {
+        pathremove $1 $2
+        local PATHVARIABLE=${2:-PATH}
+        export $PATHVARIABLE="$1${!PATHVARIABLE:+:${!PATHVARIABLE}}"
+}
+
+pathappend () {
+        pathremove $1 $2
+        local PATHVARIABLE=${2:-PATH}
+        export $PATHVARIABLE="${!PATHVARIABLE:+${!PATHVARIABLE}:}$1"
+}
+
+export -f pathremove pathprepend pathappend
+
+export PATH=/usr/bin
+
+if [ $EUID -eq 0 ] ; then
+        pathappend /usr/sbin
+        unset HISTFILE
+fi
+
+export HISTSIZE=1000
+export HISTIGNORE="&:[bf]g:exit"
+
+export XDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/share}
+export XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS:-/etc/xdg}
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/xdg-$USER}
+
+for script in /etc/profile.d/*.sh ; do
+        if [ -r $script ] ; then
+                . $script
+        fi
+done
+unset script
+# End /etc/profile
+EOF
+        log "profile creado"
+    fi
+    
+    # --------------------------------------------------
+    # /etc/profile.d/
+    # --------------------------------------------------
+    mkdir -p "$TARGET/etc/profile.d"
+    
+    # extrapaths.sh
+    if [ ! -f "$TARGET/etc/profile.d/extrapaths.sh" ]; then
+        cat > "$TARGET/etc/profile.d/extrapaths.sh" << 'EOF'
+if [ -d /usr/local/lib/pkgconfig ] ; then
+        pathappend /usr/local/lib/pkgconfig PKG_CONFIG_PATH
+fi
+if [ -d /usr/local/bin ]; then
+        pathprepend /usr/local/bin
+fi
+if [ -d /usr/local/sbin -a $EUID -eq 0 ]; then
+        pathprepend /usr/local/sbin
+fi
+if [ -d /usr/local/share ]; then
+        pathappend /usr/local/share XDG_DATA_DIRS
+fi
+pathappend /usr/share/info INFOPATH
+EOF
+        chmod +x "$TARGET/etc/profile.d/extrapaths.sh"
+    fi
+    
+    # readline.sh
+    if [ ! -f "$TARGET/etc/profile.d/readline.sh" ]; then
+        cat > "$TARGET/etc/profile.d/readline.sh" << 'EOF'
+if [ -z "$INPUTRC" -a ! -f "$HOME/.inputrc" ] ; then
+        INPUTRC=/etc/inputrc
+fi
+export INPUTRC
+EOF
+        chmod +x "$TARGET/etc/profile.d/readline.sh"
+    fi
+    
+    # umask.sh
+    if [ ! -f "$TARGET/etc/profile.d/umask.sh" ]; then
+        cat > "$TARGET/etc/profile.d/umask.sh" << 'EOF'
+if [ "$(id -gn)" = "$(id -un)" -a $EUID -gt 99 ] ; then
+  umask 002
+else
+  umask 022
+fi
+EOF
+        chmod +x "$TARGET/etc/profile.d/umask.sh"
+    fi
+    
+    # i18n.sh
+    if [ ! -f "$TARGET/etc/profile.d/i18n.sh" ]; then
+        cat > "$TARGET/etc/profile.d/i18n.sh" << 'EOF'
+for i in $(locale); do
+  unset ${i%=*}
+done
+
+if [[ "$TERM" = linux ]]; then
+  export LANG=C.UTF-8
+else
+  source /etc/locale.conf
+  for i in $(locale); do
+    key=${i%=*}
+    if [[ -v $key ]]; then
+      export $key
+    fi
+  done
+fi
+EOF
+        chmod +x "$TARGET/etc/profile.d/i18n.sh"
+    fi
+    log "profile.d scripts creados"
+    
+    # --------------------------------------------------
+    # /etc/skel/
+    # --------------------------------------------------
+    mkdir -p "$TARGET/etc/skel"
+    
+    # .bash_profile
+    if [ ! -f "$TARGET/etc/skel/.bash_profile" ]; then
+        cat > "$TARGET/etc/skel/.bash_profile" << 'EOF'
+# Begin ~/.bash_profile
+if [ -f "$HOME/.bashrc" ] ; then
+  source $HOME/.bashrc
+fi
+if [ -d "$HOME/bin" ] ; then
+  pathprepend $HOME/bin
+fi
+# End ~/.bash_profile
+EOF
+    fi
+    
+    # .bashrc
+    if [ ! -f "$TARGET/etc/skel/.bashrc" ]; then
+        cat > "$TARGET/etc/skel/.bashrc" << 'EOF'
+# Begin ~/.bashrc
+if [ -f "/etc/bashrc" ] ; then
+  source /etc/bashrc
+fi
+# End ~/.bashrc
+EOF
+    fi
+    
+    # .profile
+    if [ ! -f "$TARGET/etc/skel/.profile" ]; then
+        cat > "$TARGET/etc/skel/.profile" << 'EOF'
+# Begin ~/.profile
+if [ -d "$HOME/bin" ] ; then
+  pathprepend $HOME/bin
+fi
+# End ~/.profile
+EOF
+    fi
+    log "skel files creados"
+}
+
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
+cmd="$1"
+shift || true
+
+case "$cmd" in
+    apply)
+        apply_shell_config "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac

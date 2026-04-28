@@ -1,0 +1,106 @@
+#!/bin/sh
+# distroinfo - metadata de distribución (os-release, lsb-release)
+
+BASE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+. "$BASE_DIR/lib/compat.sh"
+. "$BASE_DIR/lib/state.sh"
+
+usage() {
+    echo "Uso:"
+    echo "  distroinfo set NAME VERSION ID CODENAME   # definir metadata"
+    echo "  distroinfo apply MOUNT_ROOT               # aplicar metadata"
+    exit 1
+}
+
+# --------------------------------------------------
+# SET distro info (estado)
+# --------------------------------------------------
+set_distro_info() {
+    name="$1"
+    version="$2"
+    id="$3"
+    codename="$4"
+    
+    [ -n "$name" ] && [ -n "$version" ] && [ -n "$id" ] || usage
+    
+    state_set distro NAME "$name"
+    state_set distro VERSION "$version"
+    state_set distro ID "$id"
+    state_set distro CODENAME "${codename:-}"
+    state_ok distro
+    
+    log "Distro info definido: $name $version ($id)"
+}
+
+# --------------------------------------------------
+# APPLY metadata
+# --------------------------------------------------
+apply_distro_info() {
+    TARGET="$1"
+    [ -n "$TARGET" ] || usage
+    [ "$TARGET" != "/" ] || die "Nunca aplicar sobre / (live)"
+    
+    state_load distro 2>/dev/null || true
+    
+    log "Aplicando metadata de distribución en $TARGET"
+    
+    mkdir -p "$TARGET/etc"
+    
+    # --------------------------------------------------
+    # /etc/os-release
+    # --------------------------------------------------
+    if [ ! -f "$TARGET/etc/os-release" ]; then
+        name="${NAME:-GNU NeonatoX}"
+        version="${VERSION:-2026}"
+        id="${ID:-NeonatoX}"
+        codename="${CODENAME:-Mapoyo}"
+        
+        cat > "$TARGET/etc/os-release" << EOF
+NAME="$name"
+VERSION="$version"
+ID="$id"
+PRETTY_NAME="$name $version"
+VERSION_CODENAME="$codename"
+EOF
+        log "os-release creado"
+    fi
+    
+    # --------------------------------------------------
+    # /etc/lsb-release
+    # --------------------------------------------------
+    if [ ! -f "$TARGET/etc/lsb-release" ]; then
+        name="${NAME:-GNU NeonatoX}"
+        version="${VERSION:-2026}"
+        id="${ID:-NeonatoX}"
+        codename="${CODENAME:-Mapoyo}"
+        
+        cat > "$TARGET/etc/lsb-release" << EOF
+DISTRIB_ID="$id"
+DISTRIB_RELEASE="$version"
+DISTRIB_CODENAME="$codename"
+DISTRIB_DESCRIPTION="$name"
+EOF
+        log "lsb-release creado"
+    fi
+}
+
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
+cmd="$1"
+shift || true
+
+state_init
+
+case "$cmd" in
+    set)
+        set_distro_info "$@"
+        ;;
+    apply)
+        apply_distro_info "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac

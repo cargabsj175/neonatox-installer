@@ -147,6 +147,38 @@ install)
     if [ -f "$STATE_DIR/time.ok" ]; then
         timectl apply "$MOUNT_ROOT"
     fi
+    
+    # --------------------------------------------------
+    # Identidad del sistema (hostname, hosts, machine-id)
+    # --------------------------------------------------
+    if [ -f "$STATE_DIR/systemid.ok" ] && [ -x "$BASE_DIR/bin/systemid" ]; then
+        log "Aplicando identidad del sistema"
+        "$BASE_DIR/bin/systemid" apply "$MOUNT_ROOT"
+    fi
+    
+    # --------------------------------------------------
+    # Configuración esencial (symlinks, shells, inputrc)
+    # --------------------------------------------------
+    if [ -x "$BASE_DIR/bin/sysconfig" ]; then
+        log "Aplicando configuración esencial"
+        "$BASE_DIR/bin/sysconfig" apply "$MOUNT_ROOT"
+    fi
+    
+    # --------------------------------------------------
+    # Configuración de shells (bashrc, profile, skel)
+    # --------------------------------------------------
+    if [ -x "$BASE_DIR/bin/shellconfig" ]; then
+        log "Aplicando configuración de shells"
+        "$BASE_DIR/bin/shellconfig" apply "$MOUNT_ROOT"
+    fi
+    
+    # --------------------------------------------------
+    # Metadata de distribución (os-release, lsb-release)
+    # --------------------------------------------------
+    if [ -x "$BASE_DIR/bin/distroinfo" ]; then
+        log "Aplicando metadata de distribución"
+        "$BASE_DIR/bin/distroinfo" apply "$MOUNT_ROOT"
+    fi
 
     # --------------------------------------------------
     # Pseudo-filesystems

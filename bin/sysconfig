@@ -1,0 +1,171 @@
+#!/bin/sh
+# sysconfig - configuración esencial del sistema (symlinks, shells, inputrc)
+
+BASE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+. "$BASE_DIR/lib/compat.sh"
+. "$BASE_DIR/lib/state.sh"
+
+usage() {
+    echo "Uso:"
+    echo "  sysconfig set-resolv MODE        # stub|static|none"
+    echo "  sysconfig apply MOUNT_ROOT       # aplicar configuración esencial"
+    exit 1
+}
+
+# --------------------------------------------------
+# SET RESOLV MODE (estado)
+# --------------------------------------------------
+set_resolv_mode() {
+    mode="$1"
+    [ -n "$mode" ] || usage
+    
+    case "$mode" in
+        stub|static|none) ;;
+        *) die "Modo inválido: $mode (stub|static|none)" ;;
+    esac
+    
+    state_set sysconfig RESOLV_MODE "$mode"
+    state_ok sysconfig
+    log "resolv.conf mode definido: $mode"
+}
+
+# --------------------------------------------------
+# APPLY configuración esencial
+# --------------------------------------------------
+apply_config() {
+    TARGET="$1"
+    [ -n "$TARGET" ] || usage
+    [ "$TARGET" != "/" ] || die "Nunca aplicar sobre / (live)"
+    
+    state_load sysconfig 2>/dev/null || true
+    
+    log "Aplicando configuración esencial en $TARGET"
+    
+    mkdir -p "$TARGET/etc"
+    
+    # --------------------------------------------------
+    # Symlinks esenciales (solo si no existen)
+    # --------------------------------------------------
+    
+    # /etc/mtab → /proc/self/mounts
+    if [ ! -e "$TARGET/etc/mtab" ]; then
+        ln -sf /proc/self/mounts "$TARGET/etc/mtab"
+        log "mtab symlink creado"
+    fi
+    
+    # /etc/resolv.conf
+    resolv_mode="${RESOLV_MODE:-stub}"
+    if [ ! -e "$TARGET/etc/resolv.conf" ]; then
+        case "$resolv_mode" in
+            stub)
+                if [ -d "$TARGET/run/systemd/resolve" ]; then
+                    ln -sf ../run/systemd/resolve/stub-resolv.conf "$TARGET/etc/resolv.conf"
+                else
+                    echo "nameserver 8.8.8.8" > "$TARGET/etc/resolv.conf"
+                    echo "nameserver 8.8.4.4" >> "$TARGET/etc/resolv.conf"
+                fi
+                ;;
+            static)
+                echo "nameserver 8.8.8.8" > "$TARGET/etc/resolv.conf"
+                echo "nameserver 8.8.4.4" >> "$TARGET/etc/resolv.conf"
+                ;;
+            none)
+                : # No crear resolv.conf
+                ;;
+        esac
+        log "resolv.conf configurado (modo: $resolv_mode)"
+    fi
+    
+    # --------------------------------------------------
+    # Symlinks de comandos básicos
+    # --------------------------------------------------
+    
+    # awk → gawk
+    if [ ! -e "$TARGET/usr/bin/awk" ] && [ -f "$TARGET/usr/bin/gawk" ]; then
+        ln -sf gawk "$TARGET/usr/bin/awk"
+        log "awk symlink creado"
+    fi
+    
+    # sh → bash
+    if [ ! -e "$TARGET/usr/bin/sh" ] && [ -f "$TARGET/usr/bin/bash" ]; then
+        ln -sf bash "$TARGET/usr/bin/sh"
+        log "sh symlink creado"
+    fi
+    
+    # Dynamic linker (x86_64)
+    if [ "$(uname -m)" = "x86_64" ]; then
+        if [ -f "$TARGET/lib/ld-linux-x86-64.so.2" ] && [ ! -e "$TARGET/lib64/ld-linux-x86-64.so.2" ]; then
+            mkdir -p "$TARGET/lib64"
+            ln -sf ../lib/ld-linux-x86-64.so.2 "$TARGET/lib64/ld-linux-x86-64.so.2"
+            log "ld-linux-x86-64.so.2 symlink creado"
+        fi
+        if [ -f "$TARGET/lib/ld-linux-x86-64.so.2" ] && [ ! -e "$TARGET/lib64/ld-lsb-x86-64.so.3" ]; then
+            mkdir -p "$TARGET/lib64"
+            ln -sf ../lib/ld-linux-x86-64.so.2 "$TARGET/lib64/ld-lsb-x86-64.so.3"
+            log "ld-lsb-x86-64.so.3 symlink creado"
+        fi
+    fi
+    
+    # --------------------------------------------------
+    # /etc/shells
+    # --------------------------------------------------
+    if [ ! -f "$TARGET/etc/shells" ]; then
+        cat > "$TARGET/etc/shells" << 'EOF'
+# Begin /etc/shells
+/bin/sh
+/bin/bash
+# End /etc/shells
+EOF
+        log "shells creado"
+    fi
+    
+    # --------------------------------------------------
+    # /etc/inputrc
+    # --------------------------------------------------
+    if [ ! -f "$TARGET/etc/inputrc" ]; then
+        cat > "$TARGET/etc/inputrc" << 'EOF'
+# Begin /etc/inputrc
+set horizontal-scroll-mode Off
+set meta-flag On
+set input-meta On
+set convert-meta Off
+set output-meta On
+set bell-style none
+"\eOd": backward-word
+"\eOc": forward-word
+"\e[1~": beginning-of-line
+"\e[4~": end-of-line
+"\e[5~": beginning-of-history
+"\e[6~": end-of-history
+"\e[3~": delete-char
+"\e[2~": quoted-insert
+"\eOH": beginning-of-line
+"\eOF": end-of-line
+"\e[H": beginning-of-line
+"\e[F": end-of-line
+# End /etc/inputrc
+EOF
+        log "inputrc creado"
+    fi
+}
+
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
+cmd="$1"
+shift || true
+
+state_init
+
+case "$cmd" in
+    set-resolv)
+        set_resolv_mode "$@"
+        ;;
+    apply)
+        apply_config "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac
